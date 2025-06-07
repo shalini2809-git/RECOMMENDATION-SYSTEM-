@@ -1,0 +1,161 @@
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
+from surprise import Dataset, Reader, KNNBasic, SVD, accuracy
+from surprise.model_selection import train_test_split
+
+def main():
+    # =============================================
+    # 1. Content-Based Filtering Recommendation
+    # =============================================
+    print("\nContent-Based Filtering Recommendations")
+    print("=====================================")
+    
+    # Sample movie data
+    movies = {
+        'item_id': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        'title': ['The Shawshank Redemption', 'The Godfather', 'The Dark Knight', 
+                 'Pulp Fiction', 'Forrest Gump', 'Inception', 'The Matrix',
+                 'Goodfellas', 'Fight Club', 'The Silence of the Lambs'],
+        'genre': ['Drama', 'Crime,Drama', 'Action,Crime,Drama', 
+                 'Crime,Drama', 'Drama,Romance', 'Action,Adventure,Sci-Fi',
+                 'Action,Sci-Fi', 'Biography,Crime,Drama', 'Drama', 'Crime,Drama,Thriller']
+    }
+    
+    movies_df = pd.DataFrame(movies)
+    
+    # Create TF-IDF matrix
+    tfidf = TfidfVectorizer(stop_words='english')
+    tfidf_matrix = tfidf.fit_transform(movies_df['genre'])
+    
+    # Compute cosine similarity
+    cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
+    
+    # Content-based recommendation function
+    def content_based_recommendations(title, n=3):
+        idx = movies_df[movies_df['title'] == title].index[0]
+        sim_scores = list(enumerate(cosine_sim[idx]))
+        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
+        sim_scores = sim_scores[1:n+1]  # Get top n similar items
+        movie_indices = [i[0] for i in sim_scores]
+        return movies_df['title'].iloc[movie_indices]
+    
+    # Test content-based recommendations
+    print("\nMovies similar to 'The Godfather':")
+    print(content_based_recommendations('The Godfather'))
+    
+    # =============================================
+    # 2. Collaborative Filtering Recommendation
+    # =============================================
+    print("\n\nCollaborative Filtering Recommendations")
+    print("=====================================")
+    
+    # Sample user ratings data
+    ratings = {
+        'user_id': [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+        'item_id': [1, 2, 3, 1, 2, 4, 1, 3, 5, 2, 3, 6, 4, 5, 6, 1, 3, 4],
+        'rating': [5, 4, 3, 4, 5, 2, 3, 4, 5, 2, 4, 5, 4, 3, 2, 5, 4, 3]
+    }
+    
+    ratings_df = pd.DataFrame(ratings)
+    
+    # Define the reader
+    reader = Reader(rating_scale=(1, 5))
+    
+    # Load the dataset
+    data = Dataset.load_from_df(ratings_df[['user_id', 'item_id', 'rating']], reader)
+    
+    # Split the dataset
+    trainset, testset = train_test_split(data, test_size=0.25)
+    
+    # User-based collaborative filtering
+    sim_options = {'name': 'cosine', 'user_based': True}
+    user_based = KNNBasic(sim_options=sim_options)
+    user_based.fit(trainset)
+    user_predictions = user_based.test(testset)
+    
+    # Item-based collaborative filtering
+    sim_options = {'name': 'cosine', 'user_based': False}
+    item_based = KNNBasic(sim_options=sim_options)
+    item_based.fit(trainset)
+    item_predictions = item_based.test(testset)
+    
+    # Matrix Factorization (SVD)
+    svd = SVD()
+    svd.fit(trainset)
+    svd_predictions = svd.test(testset)
+    
+    # Evaluate models
+    print("\nModel Performance:")
+    print(f"User-based CF RMSE: {accuracy.rmse(user_predictions, verbose=False):.4f}")
+    print(f"Item-based CF RMSE: {accuracy.rmse(item_predictions, verbose=False):.4f}")
+    print(f"SVD RMSE: {accuracy.rmse(svd_predictions, verbose=False):.4f}")
+    
+    # Recommendation function
+    def collaborative_recommendations(user_id, model, n=3):
+        all_item_ids = movies_df['item_id'].unique()
+        rated_items = ratings_df[ratings_df['user_id'] == user_id]['item_id'].unique()
+        items_to_predict = [item for item in all_item_ids if item not in rated_items]
+        
+        testset = [[user_id, item_id, 4] for item_id in items_to_predict]
+        predictions = model.test(testset)
+        
+        predictions.sort(key=lambda x: x.est, reverse=True)
+        top_n = predictions[:n]
+        
+        return [(pred.iid, pred.est) for pred in top_n]
+    
+    # Test recommendations
+    user_id = 1
+    print(f"\nTop recommendations for user {user_id}:")
+    print("\nUser-based CF:")
+    for item_id, rating in collaborative_recommendations(user_id, user_based):
+        title = movies_df[movies_df['item_id'] == item_id]['title'].values[0]
+        print(f"{title} - Predicted rating: {rating:.2f}")
+    
+    print("\nSVD:")
+    for item_id, rating in collaborative_recommendations(user_id, svd):
+        title = movies_df[movies_df['item_id'] == item_id]['title'].values[0]
+        print(f"{title} - Predicted rating: {rating:.2f}")
+    
+    # =============================================
+    # 3. Hybrid Recommendation System
+    # =============================================
+    print("\n\nHybrid Recommendations")
+    print("=====================================")
+    
+    def hybrid_recommendations(user_id, title, n=3):
+        # Content-based part
+        content_recs = content_based_recommendations(title, n)
+        content_ids = movies_df[movies_df['title'].isin(content_recs)]['item_id'].tolist()
+        
+        # Collaborative filtering part
+        collab_recs = collaborative_recommendations(user_id, svd, n)
+        collab_ids = [rec[0] for rec in collab_recs]
+        
+        # Combine results
+        rated_items = ratings_df[ratings_df['user_id'] == user_id]['item_id'].unique()
+        hybrid_ids = list(set(content_ids + collab_ids))
+        hybrid_ids = [item for item in hybrid_ids if item not in rated_items]
+        
+        # Get top n hybrid recommendations
+        hybrid_recs = []
+        for item_id in hybrid_ids[:n]:
+            title = movies_df[movies_df['item_id'] == item_id]['title'].values[0]
+            # Get predicted rating from SVD
+            pred = svd.predict(user_id, item_id)
+            hybrid_recs.append((title, pred.est))
+        
+        # Sort by predicted rating
+        hybrid_recs.sort(key=lambda x: x[1], reverse=True)
+        return hybrid_recs
+    
+    # Test hybrid recommendations
+    user_id = 2
+    title = 'The Godfather'
+    print(f"\nHybrid recommendations for user {user_id} who likes '{title}':")
+    for title, rating in hybrid_recommendations(user_id, title):
+        print(f"{title} - Predicted rating: {rating:.2f}")
+
+if __name__ == "__main__":
+    main()
